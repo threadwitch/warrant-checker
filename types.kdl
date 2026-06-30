@@ -1,0 +1,165 @@
+// types.kdl — the shared VOCABULARY. Vendorable: copy or submodule into any
+// repo. Pure type declaration — no repo identity, no paths, no table-setting.
+// Those live in the per-repo profile.
+//
+// Convention: first positional arg names a thing; further positional args are
+// its value/target list; props are modifiers; booleans are #true / #false.
+// Scalar types: ident, string, int, epoch (monotonic int), duration.
+//
+// `status` decomposed into three orthogonal axes:
+//   activity  — shared, flat, tier-0   (are you acting on it now)
+//   lifecycle — per-type, categorical  (its own arc)
+//   readiness — shared lattice, DERIVED, tier-2  (fitness to depend on / currency)
+
+types version=1 {
+
+    // ── Shared value sets ────────────────────────────────────────────
+    domain "Activity"  { oneof "active" "dormant" }
+    domain "Interface" { oneof "usb-2" "usb-3.2-gen2" "bluetooth" "i2c" "gpio" }
+
+    // Depend-on-me axis. One lattice everywhere. Ascending; meet = glb.
+    // The only axis any cross-node constraint reads.
+    lattice "Readiness" { rank "unavailable" "provisional" "stable" }
+
+    // ── Rows ─────────────────────────────────────────────────────────
+    common {
+        field "id"     type="ident"  required=#true unique=#true
+        field "title"  type="string" required=#true
+        field "tags"   type="string" repeated=#true
+        field "status" domain="Activity" required=#true   // the activity axis only
+    }
+
+    // Reference / context documents share two currency fields. Lifecycle and
+    // its readiness projection stay per-type (arcs are categorical), so they
+    // are NOT declared here.
+    doc-common {
+        include "common"
+        field "reviewed"  type="timestamp"  // when last reviewed (date or git commit-ref)
+        field "fresh-for" type="duration"   // review validity window; omit => never goes stale
+    }
+
+    // ── Gear / software / project ────────────────────────────────────
+    type "hardware" {
+        include "common"
+        lifecycle "wishlist" "ordered" "owned" "retired"
+        readiness from="lifecycle" override="meet" {
+            map "wishlist" "unavailable"
+            map "ordered"  "unavailable"
+            map "owned"    "stable"
+            map "retired"  "unavailable"   // lifecycle-top, readiness-bottom: the inversion, fixed
+        }
+        field "interfaces" domain="Interface" repeated=#true
+        edge "enables"    "project"  repeated=#true
+        edge "depends_on" "hardware" repeated=#true
+    }
+
+    type "software" {
+        include "common"
+        lifecycle "planned" "installed" "running" "deprecated"
+        readiness from="lifecycle" override="meet" {
+            map "planned"    "unavailable"
+            map "installed"  "provisional"
+            map "running"    "stable"
+            map "deprecated" "provisional"   // still works; depend with caution
+        }
+        edge "runs_on" "hardware" repeated=#true
+        edge "enables" "project"  repeated=#true
+    }
+
+    type "project" {
+        include "common"
+        lifecycle "idea" "active" "done" "abandoned"
+        readiness from="lifecycle" override="meet" {
+            map "idea"      "unavailable"
+            map "active"    "provisional"
+            map "done"      "stable"
+            map "abandoned" "unavailable"
+        }
+        field "priority" type="int" min=1 max=5
+        edge "depends_on" "project"             repeated=#true
+        edge "uses"       "hardware" "software" repeated=#true
+    }
+
+    // ── Reference / context documents ────────────────────────────────
+    // For docs, readiness reads as CURRENCY, not dependability. `currency`
+    // contributes a floor to the readiness meet when a review has expired.
+    // NOTE the warrant boundary: this certifies form + references + currency,
+    // never that the words are TRUE. Accuracy is semantic and out of scope.
+    type "readme" {
+        include "doc-common"
+        lifecycle "draft" "current" "stale"
+        readiness from="lifecycle" override="meet" {
+            map "draft"   "provisional"
+            map "current" "stable"
+            map "stale"   "unavailable"
+            currency field="reviewed" within="fresh-for" else="unavailable"
+        }
+        tracks scope="enclosing"   // review when anything in the enclosing subtree changes after `reviewed`
+    }
+
+    type "context-doc" {
+        include "doc-common"
+        lifecycle "draft" "current" "stale"
+        readiness from="lifecycle" override="meet" {
+            map "draft"   "provisional"
+            map "current" "stable"
+            map "stale"   "unavailable"
+            currency field="reviewed" within="fresh-for" else="unavailable"
+        }
+        tracks scope="enclosing"
+    }
+
+    type "design-doc" {
+        include "doc-common"
+        lifecycle "draft" "reviewed" "accepted" "superseded"
+        readiness from="lifecycle" override="meet" {
+            map "draft"      "unavailable"
+            map "reviewed"   "provisional"
+            map "accepted"   "stable"
+            map "superseded" "unavailable"
+            currency field="reviewed" within="fresh-for" else="unavailable"
+        }
+        edge "documents" "project" repeated=#true
+        tracks subjects="documents"   // review when a documented project changes after `reviewed`
+    }
+
+    type "skill" {
+        include "doc-common"
+        lifecycle "draft" "active" "deprecated"
+        readiness from="lifecycle" override="meet" {
+            map "draft"      "provisional"
+            map "active"     "stable"
+            map "deprecated" "provisional"
+            currency field="reviewed" within="fresh-for" else="unavailable"
+        }
+        edge "augments" "project" repeated=#true
+        tracks subjects="augments"
+    }
+
+    type "process-record" {
+        include "doc-common"
+        // A record is a historical fact: it does not go stale and is never
+        // review-flagged. No `currency`, no `tracks`; `fresh-for` left unset.
+        lifecycle "draft" "final"
+        readiness from="lifecycle" override="meet" {
+            map "draft" "provisional"
+            map "final" "stable"
+        }
+        edge "documents" "project" repeated=#true
+    }
+
+    // ── Derived attribute (tier-2, the only fixpoint) ────────────────
+    // glb of self.readiness and deps' effective_readiness, over depends_on
+    // only. Doc edges (documents/augments) are referential, NOT readiness-
+    // propagating: a stale README must not drag down the project.
+    // Recomputed at boot, never persisted.
+    attribute "effective_readiness" lattice="Readiness" {
+        init "readiness"
+        meet over="depends_on"
+    }
+
+    // ── Intrinsic constraint (travels with the types) ────────────────
+    constraint "deep-ready" {
+        require "effective_readiness" is="stable" when="readiness" is="stable"
+    }
+}

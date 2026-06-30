@@ -1,0 +1,111 @@
+// schema.kdl — carried at the root of each repo the checker validates.
+//
+// Reading convention:
+//   • first positional arg names a thing
+//   • further positional args are its value / target list
+//   • props (key=value) are modifiers
+//   • booleans are KDL v2 keywords: #true / #false
+//
+// `status` was three axes collapsed on one symbol. Decomposed here into:
+//   • activity   — shared, flat, tier-0      (are you acting on it now)
+//   • lifecycle  — per-type, categorical, tier-0   (its own arc)
+//   • readiness  — shared lattice, DERIVED, tier-2  (fitness to depend on)
+// Syntax signals tier: `oneof` = flat/local, `rank` = lattice/can feed a
+// constraint, `attribute` = the only construct that buys graph closure.
+
+schema version=1 {
+
+    // ── Shared value sets ────────────────────────────────────────────
+    domain "Activity" {
+        oneof "active" "dormant"          // flat, unordered — nothing compares activities
+    }
+    domain "Interface" {
+        oneof "usb-2" "usb-3.2-gen2" "bluetooth" "i2c" "gpio"
+    }
+
+    // The depend-on-me axis. One lattice, identical everywhere. Ascending;
+    // meet = min. This is the ONLY axis any cross-node constraint reads.
+    lattice "Readiness" {
+        rank "unavailable" "provisional" "stable"
+    }
+
+    // ── Common row ───────────────────────────────────────────────────
+    // Earned its place back: activity is a genuinely shared, refinement-free
+    // field. Keeps the `status` name for its PM connotation; the narrow
+    // domain is what stops it re-accreting the lifecycle/readiness senses.
+    common {
+        field "id"     type="ident"  required=#true unique=#true
+        field "title"  type="string" required=#true
+        field "tags"   type="string" repeated=#true
+        field "status" domain="Activity" required=#true
+    }
+
+    // ── Node types ───────────────────────────────────────────────────
+    type "hardware" {
+        include "common"
+
+        // tier-0: per-type arc. Distinct value set, not a subset of anything.
+        lifecycle "wishlist" "ordered" "owned" "retired"
+
+        // tier-0 local projection lifecycle → readiness. MUST be total over
+        // the lifecycle domain (schema error otherwise). Fixes the inversion:
+        // `retired` is lifecycle-top but readiness-bottom, on purpose.
+        // override="meet": a doc may carry its own `readiness`, but only
+        // downward — flag owned-but-flaky as provisional, never promote.
+        readiness from="lifecycle" override="meet" {
+            map "wishlist" "unavailable"
+            map "ordered"  "unavailable"
+            map "owned"    "stable"
+            map "retired"  "unavailable"
+        }
+
+        field "interfaces" domain="Interface" repeated=#true
+
+        edge "enables"    "project"  repeated=#true
+        edge "depends_on" "hardware" repeated=#true
+    }
+
+    type "software" {
+        include "common"
+        lifecycle "planned" "installed" "running" "deprecated"
+        readiness from="lifecycle" override="meet" {
+            map "planned"    "unavailable"
+            map "installed"  "provisional"
+            map "running"    "stable"
+            map "deprecated" "provisional"     // still works; depend with caution
+        }
+        edge "runs_on" "hardware" repeated=#true
+        edge "enables" "project"  repeated=#true
+    }
+
+    type "project" {
+        include "common"
+        lifecycle "idea" "active" "done" "abandoned"
+        readiness from="lifecycle" override="meet" {
+            map "idea"      "unavailable"
+            map "active"    "provisional"
+            map "done"      "stable"
+            map "abandoned" "unavailable"
+        }
+        field "priority" type="int" min=1 max=5
+        edge "depends_on" "project"             repeated=#true
+        edge "uses"       "hardware" "software" repeated=#true
+    }
+
+    // ── Derived attribute (tier-2, the only fixpoint) ────────────────
+    // effective_readiness = glb(self.readiness, meet of deps' effective).
+    // Same meet from the include/refine turn, lifted from row to graph.
+    // Converges on finite lattice height; a depends_on cycle collapses to
+    // the meet over its SCC. Recomputed at boot, NEVER persisted.
+    attribute "effective_readiness" lattice="Readiness" {
+        init "readiness"
+        meet over="depends_on"
+    }
+
+    // ── Constraints (read readiness, never lifecycle, never activity) ─
+    // Deep readiness: a node that is locally stable must have a fully
+    // stable dependency subtree. Subsumes the shallow direct-dep check.
+    constraint "deep-ready" {
+        require "effective_readiness" is="stable" when="readiness" is="stable"
+    }
+}

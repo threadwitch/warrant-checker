@@ -1,0 +1,39 @@
+// profile.kdl — the PER-REPO file. Plumbing + table-setting. Points at the
+// shared vocabulary; never edits it. This is the half that differs between
+// your repo, a monorepo, and someone else's repo you're dropping into.
+//
+// (If several repos want the SAME table-setting, lift the `shape` blocks into
+//  a vendorable preset and `use` it here — meet-merge makes preset + local
+//  overrides compose order-independently. Not worth splitting yet.)
+
+profile {
+
+    // ── Plumbing (always local; describes THIS checkout) ─────────────
+    id        "gear-inventory"
+    use       "types.kdl"
+    scan      "hardware/" "software/" "projects/" "docs/"
+    frontmatter fence="+++"
+    vouch     allow=#true require-expiry=#false   // strict repo: allow=#false
+
+    // ── Table-setting (the new construct) ────────────────────────────
+    // "Does this anchor have the docs it should." A cardinality claim over
+    // the type-index, scoped to an anchor. Not a fixpoint, not transitive;
+    // revalidates on identity changes only (same trigger as edge resolution).
+    // Orthogonal to conformance: a repo can be `warranted` yet `incomplete`.
+    //
+    // scope:
+    //   "subtree" (default) — anchor owns its directory subtree; membership by
+    //                          nearest-enclosing-anchor (longest path prefix).
+    //                          Zero annotation; matches monorepo layout and
+    //                          lets you point at a stranger's repo untouched.
+    //   "repo"              — one implicit anchor spanning the whole repo
+    //                          (the cheap single-project aggregate).
+    //   "edge" via="<edge>" — anchor owns nodes that link to it; for graph-
+    //                          native repos that prefer explicit membership.
+    shape "project" scope="subtree" {
+        require "readme"         count=1
+        require "design-doc"     count=1
+        require "skill"          min=1
+        require "process-record" min=0   // permitted, not required — stated, not implied
+    }
+}
